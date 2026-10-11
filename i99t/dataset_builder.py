@@ -1,6 +1,12 @@
+"""
+dataset_builder.py
+==================
+Builds node-level and path-level feature DataFrames.
+Supports both BLIF (preferred) and BENCH (fallback) input.
+"""
+
 import pandas as pd
 from collections import deque
-from bench_parser import parse_bench
 from graph_builder import build_graph
 import networkx as nx
 
@@ -22,45 +28,50 @@ def compute_logic_depth(G):
     return depth
 
 
-def build_dataset(bench_file):
+def _parse(input_file, file_type):
+    if file_type == "blif":
+        from blif_parser import parse_blif
+        return parse_blif(input_file)
+    else:
+        from bench_parser import parse_bench
+        return parse_bench(input_file)
 
-    print("Opening:", bench_file)
 
-    inputs, outputs, gates = parse_bench(bench_file)
+def build_dataset(input_file, file_type=None):
+    if file_type is None:
+        file_type = "blif" if input_file.endswith(".blif") else "bench"
 
-    print("Inputs:", len(inputs))
-    print("Outputs:", len(outputs))
-    print("Gates:", len(gates))
+    print(f"  Opening ({file_type}): {input_file}")
 
-    G = build_graph(inputs, outputs, gates)
+    inputs, outputs, gates = _parse(input_file, file_type)
 
+    print(f"  Inputs : {len(inputs)}")
+    print(f"  Outputs: {len(outputs)}")
+    print(f"  Gates  : {len(gates)}")
+
+    G         = build_graph(inputs, outputs, gates)
     depth_map = compute_logic_depth(G)
 
     data = []
-
     for node in G.nodes:
-
-        ntype  = G.nodes[node].get("type", "UNKNOWN")
-        fanin  = G.in_degree(node)
-        fanout = G.out_degree(node)
-        depth  = depth_map[node]
-
         data.append({
             "node"  : node,
-            "type"  : ntype,
-            "fanin" : fanin,
-            "fanout": fanout,
-            "depth" : depth,
+            "type"  : G.nodes[node].get("type", "UNKNOWN"),
+            "fanin" : G.in_degree(node),
+            "fanout": G.out_degree(node),
+            "depth" : depth_map[node],
         })
 
     return pd.DataFrame(data)
 
 
-def build_path_dataset(bench_file):
-
+def build_path_dataset(input_file, file_type=None):
     from feature_extractor import get_all_paths, extract_features
 
-    inputs, outputs, gates = parse_bench(bench_file)
+    if file_type is None:
+        file_type = "blif" if input_file.endswith(".blif") else "bench"
+
+    inputs, outputs, gates = _parse(input_file, file_type)
     G = build_graph(inputs, outputs, gates)
 
     print("  Extracting paths...")
@@ -69,7 +80,7 @@ def build_path_dataset(bench_file):
 
     path_data = []
     for path in paths:
-        features = extract_features(G, path)
+        features          = extract_features(G, path)
         features["start"] = path[0]
         features["end"]   = path[-1]
         features["path"]  = " -> ".join(path)

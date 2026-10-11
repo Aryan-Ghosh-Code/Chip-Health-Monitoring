@@ -51,9 +51,7 @@ def get_gate_delay(gate_type):
     return GATE_DELAY_PS.get(gate_type, DEFAULT_DELAY_PS)
 
 
-# ═════════════════════════════════════════════════════════════════════════════
 # FORWARD PASS — Actual Arrival Time (AAT)
-# ═════════════════════════════════════════════════════════════════════════════
 
 def compute_aat(G):
     """
@@ -82,9 +80,7 @@ def compute_aat(G):
     return aat
 
 
-# ═════════════════════════════════════════════════════════════════════════════
 # BACKWARD PASS — Required Arrival Time (RAT)
-# ═════════════════════════════════════════════════════════════════════════════
 
 def compute_rat(G, aat, clock_period_ps):
     """
@@ -176,37 +172,33 @@ def compute_path_timing(G, paths, aat, rat, slack):
 # ═════════════════════════════════════════════════════════════════════════════
 
 def classify_paths(path_timing, ncp_margin=0.10):
-    """
-    CP  = path(s) with minimum slack (slack ≈ 0)
-    NCP = paths whose slack is within ncp_margin of CP slack
-          i.e. slack <= CP_slack + ncp_margin * clock_period
-    PCP = NCP candidates (SP/AF flagged after Step B)
-    
-    ncp_margin=0.10 means within 10% of clock period above CP slack.
-    """
     if not path_timing:
         return [], [], []
 
-    cp_slack = path_timing[0]["path_slack_ps"]   # already sorted
+    cp_slack  = path_timing[0]["path_slack_ps"]
+    max_delay = max(p["path_delay_ps"] for p in path_timing)
 
-    # CP: all paths at minimum slack (may be ties)
-    cp  = [p for p in path_timing if p["path_slack_ps"] == cp_slack]
+    # CP = paths AT minimum slack (includes ties)
+    cp = [p for p in path_timing if p["path_slack_ps"] == cp_slack]
 
-    # NCP: paths within ncp_margin * max_delay of CP slack
-    max_delay  = max(p["path_delay_ps"] for p in path_timing)
+    # NCP window: from just above CP slack up to 10% of max_delay higher
     ncp_cutoff = cp_slack + ncp_margin * max_delay
     ncp = [p for p in path_timing
-           if cp_slack < p["path_slack_ps"] <= ncp_cutoff]
+           if p["path_slack_ps"] > cp_slack and
+              p["path_slack_ps"] <= ncp_cutoff]
 
-    # PCP candidates = NCP (SP/AF will filter further in Step B)
+    # If NCP is empty (all paths tied at CP slack), take next distinct slack tier
+    if not ncp:
+        all_slacks = sorted(set(p["path_slack_ps"] for p in path_timing))
+        if len(all_slacks) > 1:
+            next_slack = all_slacks[1]
+            ncp = [p for p in path_timing
+                   if p["path_slack_ps"] == next_slack]
+
     pcp_candidates = ncp.copy()
-
     return cp, ncp, pcp_candidates
 
-
-# ═════════════════════════════════════════════════════════════════════════════
 # MAIN ENTRY POINT
-# ═════════════════════════════════════════════════════════════════════════════
 
 def run_sta(bench_file, paths, clock_period_ps=None):
     """
