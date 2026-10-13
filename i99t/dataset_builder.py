@@ -2,13 +2,12 @@
 dataset_builder.py
 ==================
 Builds node-level and path-level feature DataFrames.
-Supports both BLIF (preferred) and BENCH (fallback) input.
+Priority: Verilog mapped > BLIF mapped > raw BENCH
 """
 
 import pandas as pd
 from collections import deque
 from graph_builder import build_graph
-import networkx as nx
 
 
 def compute_logic_depth(G):
@@ -29,7 +28,10 @@ def compute_logic_depth(G):
 
 
 def _parse(input_file, file_type):
-    if file_type == "blif":
+    if file_type == "verilog":
+        from verilog_parser import parse_verilog
+        return parse_verilog(input_file)
+    elif file_type == "blif":
         from blif_parser import parse_blif
         return parse_blif(input_file)
     else:
@@ -39,10 +41,14 @@ def _parse(input_file, file_type):
 
 def build_dataset(input_file, file_type=None):
     if file_type is None:
-        file_type = "blif" if input_file.endswith(".blif") else "bench"
+        if input_file.endswith(".v"):
+            file_type = "verilog"
+        elif input_file.endswith(".blif"):
+            file_type = "blif"
+        else:
+            file_type = "bench"
 
     print(f"  Opening ({file_type}): {input_file}")
-
     inputs, outputs, gates = _parse(input_file, file_type)
 
     print(f"  Inputs : {len(inputs)}")
@@ -69,7 +75,12 @@ def build_path_dataset(input_file, file_type=None):
     from feature_extractor import get_all_paths, extract_features
 
     if file_type is None:
-        file_type = "blif" if input_file.endswith(".blif") else "bench"
+        if input_file.endswith(".v"):
+            file_type = "verilog"
+        elif input_file.endswith(".blif"):
+            file_type = "blif"
+        else:
+            file_type = "bench"
 
     inputs, outputs, gates = _parse(input_file, file_type)
     G = build_graph(inputs, outputs, gates)

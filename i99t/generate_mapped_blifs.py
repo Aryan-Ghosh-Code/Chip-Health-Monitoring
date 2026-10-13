@@ -7,13 +7,13 @@ DATASET_PATH = r"E:\Projects\ChipHealthAnalysis\i99t"
 CIRCUITS = [
     "b01", "b02", "b03", "b04", "b05", "b06", "b07", "b08",
     "b09", "b10", "b11", "b12", "b13", "b14", "b15",
-    "b17", "b18", "b19", "b20", "b21", "b22"
+    "b17", "b20", "b21", "b22"
 ]
 
 
-def generate_mapped_blif(circuit):
-    blif_in  = os.path.join(DATASET_PATH, circuit, f"{circuit}.blif")
-    blif_out = os.path.join(DATASET_PATH, circuit, f"{circuit}_mapped.blif")
+def generate_mapped_verilog(circuit):
+    blif_in     = os.path.join(DATASET_PATH, circuit, f"{circuit}.blif")
+    verilog_out = os.path.join(DATASET_PATH, circuit, f"{circuit}_mapped.v")
 
     if not os.path.exists(blif_in):
         print(f"  [SKIP] {blif_in} not found")
@@ -21,68 +21,56 @@ def generate_mapped_blif(circuit):
 
     yosys_script = (
         f"read_blif {blif_in}; "
-        f"proc; opt; "
+        f"synth -top {circuit}.blif; "
         f"abc -g AND,NAND,OR; "
-        f"opt; stat; "
-        f"write_blif {blif_out}"
+        f"stat; "
+        f"write_verilog {verilog_out}"
     )
 
     print(f"\n{'─'*50}")
     print(f"  Processing : {circuit}")
-    print(f"  Output     : {blif_out}")
+    print(f"  Output     : {verilog_out}")
 
     try:
         result = subprocess.run(
             ["cmd", "/c", YOSYS_BAT, yosys_script],
             capture_output=True,
             text=True,
-            timeout=300
+            timeout=600
         )
 
         for line in result.stdout.splitlines():
-            if "ABC RESULTS" in line:
+            if "ABC RESULTS" in line or "cells" in line.lower():
                 print(f"  {line.strip()}")
 
         if result.returncode != 0:
             print(f"  [ERROR] RC={result.returncode}")
-            print(result.stderr[-500:] if result.stderr else "(no stderr)")
+            print(result.stderr[-300:] if result.stderr else "")
             return False
 
-        if os.path.exists(blif_out):
-            size = os.path.getsize(blif_out)
-            print(f"  [OK] {size} bytes written")
+        if os.path.exists(verilog_out):
+            size = os.path.getsize(verilog_out)
+            print(f"  [OK] {size} bytes")
             return True
         else:
             print(f"  [ERROR] Output file not created")
             return False
 
     except subprocess.TimeoutExpired:
-        print(f"  [TIMEOUT] {circuit} exceeded 300 seconds")
+        print(f"  [TIMEOUT] {circuit}")
         return False
 
 
 def main():
-    print(f"Bat file  : {YOSYS_BAT}")
+    print(f"Yosys bat : {YOSYS_BAT}")
     print(f"Dataset   : {DATASET_PATH}")
-
-    # Sanity check
-    print(f"\nSanity check...")
-    test = subprocess.run(
-        ["cmd", "/c", YOSYS_BAT, "help"],
-        capture_output=True, text=True, timeout=30
-    )
-    if "Yosys" in test.stdout or test.returncode == 0:
-        print(f"  Yosys reachable via bat file ✓")
-    else:
-        print(f"  [FAIL] RC={test.returncode}")
-        print(test.stderr[:300])
-        return
+    print(f"Flow      : read_blif → synth → abc -g AND,NAND,OR → write_verilog\n")
 
     success = []
     failed  = []
 
     for circuit in CIRCUITS:
-        ok = generate_mapped_blif(circuit)
+        ok = generate_mapped_verilog(circuit)
         if ok:
             success.append(circuit)
         else:
@@ -92,7 +80,7 @@ def main():
     print(f"  Success : {len(success)} — {success}")
     if failed:
         print(f"  Failed  : {len(failed)} — {failed}")
-    print(f"\n  Next: python blif_parser.py b01 b10")
+    print(f"\n  Next: python verilog_parser.py b01 b10")
 
 
 if __name__ == "__main__":

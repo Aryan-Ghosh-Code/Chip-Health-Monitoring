@@ -2,7 +2,7 @@
 run_path_pipeline.py
 ====================
 Builds path-level feature dataset for selected circuits.
-Uses ABC-mapped BLIF files if available, falls back to raw BENCH.
+Priority: *_mapped.v > *_mapped.blif > *.bench
 """
 
 import os
@@ -16,19 +16,22 @@ CIRCUITS = ["b01", "b02", "b03", "b06", "b08", "b09", "b10"]
 all_data = []
 
 for folder in CIRCUITS:
+    v_mapped = os.path.join(DATASET_PATH, folder, f"{folder}_mapped.v")
+    b_mapped = os.path.join(DATASET_PATH, folder, f"{folder}_mapped.blif")
+    b_raw    = os.path.join(DATASET_PATH, folder, f"{folder}.bench")
 
-    blif_mapped = os.path.join(DATASET_PATH, folder, f"{folder}_mapped.blif")
-    bench_raw   = os.path.join(DATASET_PATH, folder, f"{folder}.bench")
-
-    if os.path.exists(blif_mapped):
-        input_file = blif_mapped
+    if os.path.exists(v_mapped):
+        input_file = v_mapped
+        file_type  = "verilog"
+    elif os.path.exists(b_mapped):
+        input_file = b_mapped
         file_type  = "blif"
-    elif os.path.exists(bench_raw):
-        input_file = bench_raw
+    elif os.path.exists(b_raw):
+        input_file = b_raw
         file_type  = "bench"
-        print(f"  [WARN] {folder}: using raw .bench")
+        print(f"  [WARN] {folder}: using raw bench")
     else:
-        print(f"  [SKIP] {folder}: no input file found")
+        print(f"  [SKIP] {folder}: no input file")
         continue
 
     print(f"\nProcessing: {folder}  ({file_type})")
@@ -41,7 +44,8 @@ for folder in CIRCUITS:
     except Exception as e:
         print(f"  ERROR: {e}")
 
-final = pd.concat(all_data, ignore_index=True)
-final.to_csv("path_dataset.csv", index=False)
-print(f"\nDone. path_dataset.csv: {final.shape}")
-print(final.groupby("circuit")["delay"].max())
+if all_data:
+    final = pd.concat(all_data, ignore_index=True)
+    final.to_csv("path_dataset.csv", index=False)
+    print(f"\nDone. path_dataset.csv: {final.shape}")
+    print(final.groupby("circuit")["delay"].max())
