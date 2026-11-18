@@ -1,177 +1,140 @@
 """
 verilog_parser.py
 =================
-Parses Yosys/ABC-mapped Verilog output.
-Flow: read_blif → synth → abc -g AND,NAND,OR → write_verilog
+Parses Yosys Verilog written with:  write_verilog -noexpr -noattr
+Flow: read_blif -> synth -> abc -g AND,NAND,OR -> write_verilog
 
-Cell names $_AND_, $_NAND_, $_NOT_, $_OR_, $_FF_ map to gate types.
+Handles:
+  * cell instances  \\$_AND_ _12_ (.A(x), .B(y), .Y(z));
+  * plain aliases   assign U34 = _027_;   (resolved so every signal has ONE name)
 
-Returns same interface as bench_parser.py:
-    inputs, outputs, gates
+Returns: inputs, outputs, gates   (same interface as bench_parser.py)
 """
 
-import re
 import os
-
+import re
+import sys
+from collections import Counter
 
 CELL_TYPE_MAP = {
-    "$_AND_"   : "AND",
-    "$_NAND_"  : "NAND",
-    "$_OR_"    : "OR",
-    "$_NOR_"   : "NOR",
-    "$_NOT_"   : "NOT",
-    "$_BUF_"   : "BUF",
-    "$_XOR_"   : "XOR",
-    "$_XNOR_"  : "XNOR",
-    "$_FF_"    : "DFF",
-    "$_DFF_P_" : "DFF",
-    "$_DFF_N_" : "DFF",
-    "$_ANDNOT_": "ANDNOT",
-    "$_ORNOT_" : "ORNOT",
-    "$_MUX_"   : "MUX",
+    "$_AND_": "AND",   "$_NAND_": "NAND", "$_OR_": "OR",   "$_NOR_": "NOR",
+    "$_NOT_": "NOT",   "$_BUF_": "BUF",   "$_XOR_": "XOR", "$_XNOR_": "XNOR",
+    "$_ANDNOT_": "ANDNOT", "$_ORNOT_": "ORNOT", "$_MUX_": "MUX",
+    "$_FF_": "DFF",    "$_DFF_P_": "DFF", "$_DFF_N_": "DFF",
+}
+
+KNOWN = {   # ground truth from Yosys stat (same flow)
+    "b01": {"AND": 10, "NAND": 17, "NOT": 3,  "OR": 7,  "DFF": 5},
+    "b10": {"AND": 38, "NAND": 89, "NOT": 13, "OR": 35, "DFF": 17},
 }
 
 
 def parse_verilog(verilog_file):
-    """
-    Parse Yosys/ABC-mapped Verilog file.
-
-    Returns:
-        inputs  : list of primary input signal names
-        outputs : list of primary output signal names
-        gates   : list of {gate, type, inputs}
-    """
-    inputs  = []
-    outputs = []
-    gates   = []
-
     with open(verilog_file, "r") as fh:
-        content = fh.read()
+        text = fh.read()
 
-    # Remove single-line and block comments
-    content = re.sub(r'//[^\n]*', '', content)
-    content = re.sub(r'/\*.*?\*/', '', content, flags=re.DOTALL)
+    text = re.sub(r"//[^\n]*", "", text)
+    text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
 
-    # Extract input/output declarations
-    for m in re.finditer(
-        r'\b(input|output)\b\s*(?:\[[^\]]*\]\s*)?([^;]+);',
-        content
-    ):
-        direction = m.group(1)
-        names = [n.strip() for n in m.group(2).split(',')]
-        for name in names:
-            name = name.strip()
-            if name:
-                if direction == "input":
-                    inputs.append(name)
-                else:
-                    outputs.append(name)
+    # ---- ports ---------------------------------------------------------
+    inputs, outputs = [], []
+    for m in re.finditer(r"\b(input|output)\b\s*(?:\[[^\]]*\]\s*)?([^;]+);", text):
+        names = [n.strip() for n in m.group(2).split(",") if n.strip()]
+        (inputs if m.group(1) == "input" else outputs).extend(names)
 
-    # Extract cell instantiations
-    # Pattern: $_CELLTYPE_ instance_name (.PORT(sig), ...);
-    cell_pattern = re.compile(
-        r'(\$_[A-Z0-9_]+_)\s+'
-        r'(\w+)\s*'
-        r'\(([^;]+)\)\s*;',
-        re.DOTALL
-    )
+    # ---- aliases (assign a = b;) with union-find -----------------------
+    parent = {}
 
-    for m in cell_pattern.finditer(content):
-        cell_type_raw = m.group(1)
-        instance_name = m.group(2)
-        port_str      = m.group(3)
+    def find(x):
+        parent.setdefault(x, x)
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
 
-        gate_type = CELL_TYPE_MAP.get(cell_type_raw, cell_type_raw)
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
 
-        # Parse .PORT(signal) connections
-        port_map = {}
-        for pm in re.finditer(r'\.(\w+)\s*\(\s*(\S+?)\s*\)', port_str):
-            port_map[pm.group(1)] = pm.group(2)
-
-        # Output signal
-        if gate_type == "DFF":
-            output_sig  = port_map.get("Q", instance_name)
-            gate_inputs = [port_map["D"]] if "D" in port_map else []
-        elif gate_type == "MUX":
-            output_sig  = port_map.get("Y", instance_name)
-            gate_inputs = [port_map.get("A",""),
-                           port_map.get("B",""),
-                           port_map.get("S","")]
+    n_alias = 0
+    for m in re.finditer(r"assign\s+(\S+)\s*=\s*([^;]+);", text):
+        lhs, rhs = m.group(1), m.group(2).strip()
+        if re.fullmatch(r"[A-Za-z_\\][\w$.\\\[\]]*", rhs):
+            union(lhs, rhs)
+            n_alias += 1
+        elif rhs[0].isdigit():
+            continue                      # constant tie-off, ignore
         else:
-            output_sig  = port_map.get("Y", instance_name)
-            gate_inputs = [v for k, v in sorted(port_map.items())
-                           if k != "Y"]
+            raise ValueError(
+                f"{verilog_file}: found expression 'assign {lhs} = {rhs}'. "
+                "Regenerate with: write_verilog -noexpr -noattr")
 
-        gates.append({
-            "gate"  : output_sig,
-            "type"  : gate_type,
-            "inputs": [g for g in gate_inputs if g],
-        })
+    # ---- cell instances ------------------------------------------------
+    cell_re = re.compile(r"\\?(\$_[A-Z0-9_]+_)\s+(\S+)\s*\(([^;]+)\)\s*;", re.DOTALL)
+    raw = []
+    for m in cell_re.finditer(text):
+        gtype = CELL_TYPE_MAP.get(m.group(1), m.group(1))
+        ports = {p.group(1): p.group(2)
+                 for p in re.finditer(r"\.(\w+)\s*\(\s*(\S+?)\s*\)", m.group(3))}
+        raw.append((gtype, ports))
 
+    # ---- canonical names: each equivalence class keeps its DRIVER ------
+    drivers = {}
+    for name in inputs:
+        drivers.setdefault(find(name), name)
+    for gtype, ports in raw:
+        out = ports.get("Q") if gtype == "DFF" else ports.get("Y")
+        if out:
+            drivers.setdefault(find(out), out)
+
+    def canon(x):
+        return drivers.get(find(x), x)
+
+    # ---- build gate list -----------------------------------------------
+    gates = []
+    for gtype, ports in raw:
+        if gtype == "DFF":
+            gates.append({"gate": canon(ports["Q"]), "type": "DFF",
+                          "inputs": [canon(ports["D"])]})
+        else:
+            ins = [canon(v) for k, v in sorted(ports.items()) if k != "Y"]
+            gates.append({"gate": canon(ports["Y"]), "type": gtype, "inputs": ins})
+
+    inputs  = [canon(n) for n in inputs]
+    outputs = list(dict.fromkeys(canon(n) for n in outputs))
     return inputs, outputs, gates
 
 
-def verify_against_yosys(gates, known_counts, circuit_name=""):
-    from collections import Counter
+def verify(gates, expected, name):
     counts = Counter(g["type"] for g in gates)
-
-    print(f"\n  Verification — {circuit_name}")
-    print(f"  {'Gate':<12} {'Extracted':>10} {'Expected':>10} {'Match':>8}")
-    print(f"  {'─'*44}")
-
-    all_ok = True
-    for gt, exp in sorted(known_counts.items()):
-        ext   = counts.get(gt, 0)
-        match = "✓" if ext == exp else "✗"
-        if match == "✗":
-            all_ok = False
-        print(f"  {gt:<12} {ext:>10} {exp:>10} {match:>8}")
-
-    unexpected = {k: v for k, v in counts.items()
-                  if k not in known_counts}
-    if unexpected:
-        print(f"\n  Extra types found: {unexpected}")
-
-    print(f"\n  {'✓ All counts match Yosys stat output.' if all_ok else '✗ Mismatch.'}\n")
-    return all_ok
+    print(f"\n  Verification - {name}")
+    print(f"  {'Gate':<8}{'Parser':>8}{'Yosys':>8}  Match")
+    ok = True
+    for gt, exp in sorted(expected.items()):
+        got = counts.get(gt, 0)
+        good = got == exp
+        ok &= good
+        print(f"  {gt:<8}{got:>8}{exp:>8}  {'OK' if good else 'MISMATCH'}")
+    extra = {k: v for k, v in counts.items() if k not in expected}
+    if extra:
+        print(f"  Extra types: {extra}")
+        ok = False
+    print(f"\n  {'PASS' if ok else 'FAIL'}\n")
+    return ok
 
 
 if __name__ == "__main__":
-    import sys
-
     DATASET_PATH = r"E:\Projects\ChipHealthAnalysis\i99t"
-
-    # Ground truth from Yosys stat after:
-    # read_blif → synth -top <circuit>.blif → abc -g AND,NAND,OR
-    KNOWN = {
-        "b01": {"AND": 10, "NAND": 17, "NOT": 3,  "OR": 7,  "DFF": 5},
-        "b10": {"AND": 38, "NAND": 89, "NOT": 13, "OR": 35, "DFF": 17},
-    }
-
-    circuits = sys.argv[1:] if len(sys.argv) > 1 else ["b01", "b10"]
-
-    for circuit in circuits:
-        verilog = os.path.join(
-            DATASET_PATH, circuit, f"{circuit}_mapped.v"
-        )
-
-        if not os.path.exists(verilog):
-            print(f"[SKIP] {verilog} not found. Run generate_mapped_blifs.py first.")
+    for c in (sys.argv[1:] or ["b01", "b10"]):
+        path = os.path.join(DATASET_PATH, c, f"{c}_mapped.v")
+        if not os.path.exists(path):
+            print(f"[SKIP] {path} missing")
             continue
-
-        print(f"\n{'='*50}")
-        print(f"  Parsing: {verilog}")
-        inputs, outputs, gates = parse_verilog(verilog)
-
-        from collections import Counter
-        counts = Counter(g["type"] for g in gates)
-
-        print(f"  Inputs : {len(inputs)}")
-        print(f"  Outputs: {len(outputs)}")
-        print(f"  Gates  : {len(gates)}")
-        print(f"  Types  :")
-        for gt, cnt in sorted(counts.items()):
-            print(f"    {gt:<12}: {cnt}")
-
-        if circuit in KNOWN:
-            verify_against_yosys(gates, KNOWN[circuit], circuit)
+        ins, outs, gates = parse_verilog(path)
+        print(f"\n{'='*50}\n  {c}: inputs={len(ins)} outputs={len(outs)} gates={len(gates)}")
+        print(f"  outputs -> {outs}")
+        if c in KNOWN:
+            verify(gates, KNOWN[c], c)
+        else:
+            print(f"  {dict(Counter(g['type'] for g in gates))}")

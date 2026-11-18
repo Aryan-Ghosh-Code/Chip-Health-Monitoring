@@ -1,14 +1,18 @@
 import os
+import sys
 import subprocess
 
 YOSYS_BAT    = r"E:\Projects\ChipHealthAnalysis\i99t\run_yosys.bat"
 DATASET_PATH = r"E:\Projects\ChipHealthAnalysis\i99t"
 
-CIRCUITS = [
+ALL_CIRCUITS = [
     "b01", "b02", "b03", "b04", "b05", "b06", "b07", "b08",
     "b09", "b10", "b11", "b12", "b13", "b14", "b15",
     "b17", "b20", "b21", "b22"
 ]
+
+# Same flow everywhere: read_blif -> synth -> abc -> write_verilog (cells, no expressions)
+WRITE_CMD = "write_verilog -noexpr -noattr"
 
 
 def generate_mapped_verilog(circuit):
@@ -24,23 +28,18 @@ def generate_mapped_verilog(circuit):
         f"synth -top {circuit}.blif; "
         f"abc -g AND,NAND,OR; "
         f"stat; "
-        f"write_verilog {verilog_out}"
+        f"{WRITE_CMD} {verilog_out}"
     )
 
-    print(f"\n{'─'*50}")
-    print(f"  Processing : {circuit}")
-    print(f"  Output     : {verilog_out}")
+    print(f"\n{'-'*50}\n  Processing : {circuit}")
 
     try:
         result = subprocess.run(
             ["cmd", "/c", YOSYS_BAT, yosys_script],
-            capture_output=True,
-            text=True,
-            timeout=600
+            capture_output=True, text=True, timeout=900
         )
-
         for line in result.stdout.splitlines():
-            if "ABC RESULTS" in line or "cells" in line.lower():
+            if "ABC RESULTS" in line:
                 print(f"  {line.strip()}")
 
         if result.returncode != 0:
@@ -49,12 +48,10 @@ def generate_mapped_verilog(circuit):
             return False
 
         if os.path.exists(verilog_out):
-            size = os.path.getsize(verilog_out)
-            print(f"  [OK] {size} bytes")
+            print(f"  [OK] {os.path.getsize(verilog_out)} bytes")
             return True
-        else:
-            print(f"  [ERROR] Output file not created")
-            return False
+        print("  [ERROR] Output file not created")
+        return False
 
     except subprocess.TimeoutExpired:
         print(f"  [TIMEOUT] {circuit}")
@@ -62,25 +59,16 @@ def generate_mapped_verilog(circuit):
 
 
 def main():
-    print(f"Yosys bat : {YOSYS_BAT}")
-    print(f"Dataset   : {DATASET_PATH}")
-    print(f"Flow      : read_blif → synth → abc -g AND,NAND,OR → write_verilog\n")
+    circuits = sys.argv[1:] if len(sys.argv) > 1 else ALL_CIRCUITS
+    print(f"Flow     : read_blif -> synth -> abc -g AND,NAND,OR -> {WRITE_CMD}")
+    print(f"Circuits : {circuits}")
 
-    success = []
-    failed  = []
+    ok  = [c for c in circuits if generate_mapped_verilog(c)]
+    bad = [c for c in circuits if c not in ok]
 
-    for circuit in CIRCUITS:
-        ok = generate_mapped_verilog(circuit)
-        if ok:
-            success.append(circuit)
-        else:
-            failed.append(circuit)
-
-    print(f"\n{'='*50}")
-    print(f"  Success : {len(success)} — {success}")
-    if failed:
-        print(f"  Failed  : {len(failed)} — {failed}")
-    print(f"\n  Next: python verilog_parser.py b01 b10")
+    print(f"\n{'='*50}\n  Success: {ok}")
+    if bad:
+        print(f"  Failed : {bad}")
 
 
 if __name__ == "__main__":
