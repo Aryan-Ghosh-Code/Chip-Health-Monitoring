@@ -1,0 +1,10 @@
+{
+  "counts": {
+    "AND": 8,
+    "DFF": 4,
+    "NAND": 8,
+    "NOT": 3,
+    "OR": 3
+  },
+  "total_cells": 26
+}
