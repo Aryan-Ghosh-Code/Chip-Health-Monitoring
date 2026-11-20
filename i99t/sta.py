@@ -21,7 +21,7 @@ Gate delay table (approximate 45nm, ps units):
     Will be replaced by Liberty LUT in a future phase.
 """
 
-from bench_parser import parse_bench
+from netlist_loader import load_netlist_file
 from graph_builder import build_graph
 from collections import deque
 import networkx as nx
@@ -215,7 +215,7 @@ def run_sta(bench_file, paths, clock_period_ps=None):
         cp, ncp, pcp: classified path lists
         clock_ps    : clock period used
     """
-    inputs, outputs, gates = parse_bench(bench_file)
+    inputs, outputs, gates = load_netlist_file(bench_file)
     G = build_graph(inputs, outputs, gates)
 
     # Forward pass
